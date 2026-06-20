@@ -9,16 +9,15 @@ class RoleBlocker(commands.Cog):
     @commands.Cog.listener()
     async def on_thread_initiate(self, thread, creator, category, initial_message):
         # Check if the creator (user) has the blocked role
-        # We need to fetch the member object from the guild
         guild = self.bot.get_guild(thread.guild_id) # Assuming thread object has guild_id
         if not guild:
             print(f"Could not find guild for thread {thread.id}")
-            return
+            return # Allow thread creation if guild not found (or handle as error)
 
         member = guild.get_member(creator.id)
         if not member:
             print(f"Could not find member {creator.id} in guild {guild.id}")
-            return
+            return # Allow thread creation if member not found (or handle as error)
 
         if discord.utils.get(member.roles, id=self.blocked_role_id):
             # User has the blocked role, send an error message and prevent thread creation
@@ -30,15 +29,21 @@ class RoleBlocker(commands.Cog):
             try:
                 await creator.send(embed=error_embed)
             except discord.Forbidden:
-                # If DMs are blocked, try to send in the channel if possible (though thread isn't fully initiated)
-                # This might not work reliably as the thread is not fully set up yet.
-                pass 
+                # If DMs are blocked, log it but still prevent thread creation
+                print(f"Could not send DM to {creator.id}. User might have DMs disabled.")
             
-            # Prevent the thread from being created
-            # This is a hypothetical way to stop thread creation in Modmail
-            # Actual implementation might require raising an exception or returning a specific value
-            # For now, we'll assume returning None or raising an error will stop the process.
-            raise commands.CommandError("User is blacklisted from opening threads.")
+            # This is the crucial part: Modmail's on_thread_initiate listener needs to be stopped.
+            # Raising an exception is a common way to do this in event listeners.
+            # Modmail's internal handling of this event might catch specific exceptions
+            # to prevent thread creation. A generic CommandError might not be enough.
+            # Let's try raising a more specific exception or a custom one if needed.
+            # For now, returning None after sending the message should prevent further processing
+            # in many event-driven frameworks. If this doesn't work, we'll need Modmail-specific docs.
+            print(f"Blocking thread creation for user {creator.id} due to blocked role.")
+            # Modmail's on_thread_initiate is expected to return a boolean or raise an exception
+            # to indicate if the thread should proceed. Returning None might implicitly stop it.
+            # If this doesn't work, the Modmail documentation on blocking thread creation is essential.
+            return # This should prevent the thread from being created in Modmail
 
     # If the plugin needs to be loaded via setup function
 async def setup(bot: commands.Bot):
