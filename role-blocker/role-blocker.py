@@ -6,39 +6,39 @@ class RoleBlocker(commands.Cog):
         self.bot = bot
         self.blocked_role_id = 1480597515605770422 # The role ID to block users
 
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        # Only process DMs to the bot
-        if message.guild is not None or message.author.bot:
-            return
+    async def _close_modmail_thread(self, thread, creator, close_reason):
+        try:
+            # 1. Send closing message to the user who opened the ticket (via DM)
+            user_embed = discord.Embed(
+                title="Thread Blocked",
+                description=f"Your ticket has been closed. Reason: {close_reason}", 
+                color=discord.Color.red()
+            )
+            try:
+                await creator.send(embed=user_embed)
+            except discord.Forbidden:
+                pass
 
-        # Fetch the member from the main guild to check roles
-        # We assume the bot is in at least one guild where this role exists
-        for guild in self.bot.guilds:
-            member = guild.get_member(message.author.id)
-            if member:
-                if discord.utils.get(member.roles, id=self.blocked_role_id):
-                    # User is blacklisted, send error and stop Modmail from seeing this message
-                    error_embed = discord.Embed(
-                        title="Access Denied",
-                        description="You are currently blacklisted from opening new support threads. If you believe this is an error, please contact a staff member directly.",
-                        color=discord.Color.red()
-                    )
-                    try:
-                        await message.author.send(embed=error_embed)
-                    except discord.Forbidden:
-                        pass
-                    
-                    # To stop Modmail from processing this message, we can't easily "cancel" the event
-                    # for other listeners in discord.py. However, many Modmail versions check if a 
-                    # message has already been handled or if a certain condition is met.
-                    # Since we can't easily block other listeners, let's also use the reactive approach
-                    # but more aggressively.
-                    return
+            # 2. Attempt to close the thread using Modmail's internal mechanism (as in the previous plugin)
+            # This ensures resources are cleaned up properly in Modmail.
+            if hasattr(thread, 'close'):
+                # Some Modmail versions have the close method on the thread object
+                await thread.close(closer=self.bot.user, silent=True, delete_channel=True, message=close_reason)
+            elif hasattr(self.bot, 'modmail') and hasattr(self.bot.modmail, 'close_thread'):
+                # Others use a central modmail component
+                await self.bot.modmail.close_thread(thread.channel.id, closer=self.bot.user, silent=True)
+            else:
+                # Fallback if no programmatic close is found, at least delete the channel
+                if hasattr(thread, 'channel') and thread.channel:
+                    await thread.channel.delete(reason=f"Blocked user: {close_reason}")
+
+        except Exception as e:
+            print(f"Error closing Modmail thread for blocked user: {e}")
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, creator, category, initial_message):
-        # Aggressive reactive closing
+        # This event is dispatched when a thread channel is created.
+        # Check if the creator (user) has the blocked role
         guild = self.bot.get_guild(thread.guild_id)
         if not guild:
             return
@@ -48,26 +48,8 @@ class RoleBlocker(commands.Cog):
             return
 
         if discord.utils.get(member.roles, id=self.blocked_role_id):
-            # Close and delete the channel immediately
-            try:
-                # 1. Send closing message to user
-                error_embed = discord.Embed(
-                    title="Thread Blocked",
-                    description="You are blacklisted. This thread is being closed automatically.",
-                    color=discord.Color.red()
-                )
-                await creator.send(embed=error_embed)
-
-                # 2. Delete the channel directly via discord.py API
-                # This is the most direct way to make it "disappear" from the staff view
-                if hasattr(thread, 'channel') and thread.channel:
-                    await thread.channel.delete(reason="Blacklisted user.")
-                
-                # 3. Try to call Modmail's internal close if possible
-                if hasattr(thread, 'close'):
-                    await thread.close(closer=self.bot.user, silent=True, delete_channel=True)
-            except Exception as e:
-                print(f"Aggressive close failed: {e}")
+            # User is blacklisted, close the thread immediately using Modmail API
+            await self._close_modmail_thread(thread, creator, "User is blacklisted from opening support threads.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoleBlocker(bot))
